@@ -1,10 +1,10 @@
-# Typhoeus - Quaver Music 后端（WIP）
+# Typhoeus - Quaver Music 后端
 
 Quaver Music，是一款 QQ 音乐的第三方客户端，其目的是为了让 Linux DE / Wayland WM 用户能够爽用，基于 Electron + Vite 实现
 
 名字取自于八分音符，对应了音乐，“QQ” 的 Q 字母。
 
-这项目是其后端实现的开源，目前正在考虑 C++ / Zig。
+这项目是其后端实现的开源版本，目前混用 Python 和 TypeScript。
 
 > [!CAUTION]
 > 真爱音乐，尊重正版，音乐平台不易，该应用**不提供盗版 QQ 音乐服务！**
@@ -46,6 +46,47 @@ z：修补版本号
 - [ ] 完善加密音质播放功能（不提供下载）
 
 并在未来的 FEP 版本中，加入呼声较高的功能，或未完成实现的功能。
+
+# 已实现：高音质流传输（仅限会员）
+
+`typhoeus/` 为可安装的纯 Python 包（AGPLv3+），主仓 `api-server/` 以 path
+依赖接入，sidecar 端点：
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /stream/tiers` | 当前账号可播档位 + 全量档位（含未解锁锁标数据源）；加密档位永不出现在任何列表 |
+| `POST /stream/resolve` | 协商一档明文流：会员门控（403）→ rank 回退 → 首块明文嗅探 → 发放中继 token |
+| `GET /stream/<token>` | Range/206 流中继（`<audio>` src 指这里；vkey 不出后端） |
+
+## 档位模型（provider 无关，`typhoeus/quality.py`）
+
+```
+128(免费) < 320/320ogg/640ogg/flac(会员 GREEN+) < atmos2/atmos51/master(超级会员 SUPER)
+```
+
+- **加密边界**：QMC 档位（mflac/mgg，`EncryptedSongFileType`，带 ekey）在
+  档位策略层（451 拒绝）、provider 适配器层（映射表只含明文 `SongFileType`）、
+  嗅探层（首块 magic 非白名单即降档）三重拦截。**本后端不含任何解密代码**；
+  可缓存的只有明文档位，缓存路径与解密路径在代码上不存在交集。
+- **会员门控**：显式选高档而会员不足 → 403（UI 画 🔒 并提示开通会员，勿静默
+  降档）；`auto=true`（自动音质）→ 链裁剪到会员可及最高档。
+- **实测（超级会员，2026-09-14）**：flac/640ogg/master/atmos2/atmos51 全为
+  明文直连（`fLaC`/`OggS` magic、无 ekey），会员档位无需解密即可高音质流播；
+  非会员请求高档会被上游降级或回 result=104003。
+- NAC（腾讯自研 AICodec）非白名单容器 → 嗅探拒绝（客户端解码器不可用）。
+
+## 分层
+
+```
+typhoeus/
+  quality.py    档位定义 + 会员门槛 + 回退链（纯数据，无 IO）
+  provider.py   QualityProvider 协议（membership / resolve_links）
+  resolver.py   协商器：门控 → 回退 → 明文嗅探（asyncio 测试用假 provider）
+  stream.py     标准库 Range 中继（urllib + 线程池；无第三方依赖）
+  adapters/qqmusic.py  L-1124/QQMusicApi 适配（会员缓存 TTL + 明文档位映射）
+```
+
+测试：`uv run --with pytest --with pytest-asyncio python -m pytest`（19 项，无网络）。
 
 # 协议
 
