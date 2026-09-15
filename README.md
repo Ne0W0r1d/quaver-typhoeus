@@ -40,7 +40,7 @@ z：修补版本号
 
 罗马不是一天建成的，为了防止墙被砌歪，将完成以下工作
 
-- [ ] MPRIS 支持
+- [x] MPRIS 支持（`mpris/` TypeScript 守护进程，见下文）
 - [ ] XDG Desktop Portal Inhibit 协议与 Logind 直连睡眠抑制器实现
 - [ ] 抽象服务端 API 完善后端功能
 - [ ] 完善加密音质播放功能（不提供下载）
@@ -87,6 +87,48 @@ typhoeus/
 ```
 
 测试：`uv run --with pytest --with pytest-asyncio python -m pytest`（19 项，无网络）。
+
+# 已实现：MPRIS 支持（`mpris/` TypeScript 守护进程）
+
+Linux 桌面媒体键 / 播放器小部件（KDE Plasma 通知与全局键、playerctl、GNOME
+扩展等）通过 MPRIS 2.0 D-Bus 协议控制 Quaver。`mpris/` 是独立 TS 子项目
+（npm + esbuild 打包为单文件 CJS），基于 [mpris-service](https://github.com/dbusjs/mpris-service)
+（dbus-next），总线名 `org.mpris.MediaPlayer2.quaver`，导出
+`MediaPlayer2` + `Player` + `TrackList` 三个接口。
+
+## 进程拓扑与 IPC
+
+```
+渲染层 ui/src/mpris.ts ──ipc(quaver:mpris / quaver:mpris-cmd)── Electron main ──stdio NDJSON──> mpris-daemon（本目录）
+   player 状态快照（离散变化推 + 5s 心跳）                     spawn/ELECTRON_RUN_AS_NODE=1        │
+   控制命令执行（toggle/next/seek/volume/mode）      <──cmd（play/next/setLoop/volume/seekTo/jump…）──┘ D-Bus
+```
+
+- **状态快照是幂等的**：daemon 端 diff 后才写总线属性；任意一帧丢失由下一帧纠偏。
+- **位置不进快照高频通道**：daemon 以收到帧的 `posUs` 为基准做单调时钟外推
+  （Playing 时 +dt，钳制到时长），`playerctl position` 轮询即可拿到平滑进度。
+- 主进程对 `raise` / `quit` 直接消费（showWindow / app.quit），其余命令转渲染层执行；
+  UI 永远是唯一事实源，总线侧写入会回流到 UI 状态。
+- 快速退出码≠0（无 D-Bus 会话总线等）不重试；存活后崩溃才退避重拉（≤3 次）。
+
+## 线协议（`src/types.ts`）
+
+NDJSON：入向 `state`（status/posUs/volume/loop/track/queue/can），出向 `hello` 与
+`cmd`（play/pause/playpause/stop/next/prev/raise/quit/volume/setLoop/setShuffle/
+seek/seekTo/jump/openUri）。`mpris:trackid` = `/org/quaver/track/<key 安全化>`，
+渲染层 jump/seekTo 按同规则反解。
+
+## 构建与测试
+
+```sh
+cd mpris && npm install && npm run build   # → dist/mpris-daemon.cjs（自包含，仅 x11 外置且永不加载）
+node test/e2e.mjs                          # 需活动 D-Bus 会话总线：14 项断言（属性/方法/信号/回推 cmd）
+```
+
+已知库坑（已在代码内注释）：mpris-service 2.1.2 的 `HasTrackList` 默认 false 且
+建接口时不同步（需手动 `player.hasTrackList = true`）；`addTrack()` 的 `this` 引用
+错误（只走 `tracks` 整表替换路径）。打包：electron-builder extraResources 把
+`mpris/dist/mpris-daemon.cjs` 放进 `<resources>/mpris/`，主进程按需 spawn。
 
 # 协议
 
