@@ -87,14 +87,24 @@ def tier_by_id(tid: str) -> Tier:
     return t
 
 
-def fallback_chain(tid: str) -> list[Tier]:
-    """目标档位 → 依次降质的候选链（自目标 rank 向下降序，兜底标准音质）。"""
+def fallback_chain(tid: str, *, deprioritize: tuple[str, ...] = ()) -> list[Tier]:
+    """目标档位 → 依次降质的候选链（自目标 rank 向下降序，兜底标准音质）。
+
+    deprioritize：把这些档位整体压到链尾（仍按 rank 降序）——自动模式下
+    「臻品全景声」不优先降档到此档；但目标本身就是它时仍最先尝试（显式选档语义不变）。
+    """
     target = tier_by_id(tid)
     if target.encrypted:
         from typhoeus.errors import TierNotPlayable
 
         raise TierNotPlayable(f"加密档位 {target.label} 不支持播放（本项目不涉及解密）")
-    return [t for t in reversed(STREAMABLE) if t.rank <= target.rank]
+    chain = [t for t in reversed(STREAMABLE) if t.rank <= target.rank]
+    if deprioritize:
+        head, rest = chain[:1], chain[1:]  # chain[0] = 目标档，永不动
+        demoted = [t for t in rest if t.id in deprioritize]
+        if demoted:
+            chain = head + [t for t in rest if t.id not in deprioritize] + demoted
+    return chain
 
 
 def available_for(membership: Membership) -> list[Tier]:

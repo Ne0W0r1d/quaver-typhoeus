@@ -62,7 +62,14 @@ class StreamResolver:
         # probe_plain=False 关闭首块嗅探（省一次 RTT；单测/可信环境用）
         self.probe_plain = probe_plain
 
-    async def resolve(self, song: SongRef, tier_id: str, *, auto_downgrade: bool = False) -> ResolvedStream:
+    async def resolve(
+        self,
+        song: SongRef,
+        tier_id: str,
+        *,
+        auto_downgrade: bool = False,
+        deprioritize: tuple[str, ...] = (),
+    ) -> ResolvedStream:
         """协商一条明文播放流。
 
         auto_downgrade=False（默认，用户显式选档）：会员不足 → MembershipRequired(403)。
@@ -77,7 +84,7 @@ class StreamResolver:
         if membership < target.requires:
             if not auto_downgrade:
                 raise MembershipRequired(_gate_reason(membership, target), target.label)
-        chain = fallback_chain(tier_id)
+        chain = fallback_chain(tier_id, deprioritize=deprioritize)
         last_code = -1
         for tier in chain:
             if membership < tier.requires:

@@ -89,6 +89,17 @@ def test_fallback_chain_order():
     assert chain[0] == "master" and chain[-1] == "128"
 
 
+def test_fallback_chain_deprioritize():
+    # 全景声降权：master 链里 atmos51/atmos2 压到链尾（仍在链上，只是不优先）
+    chain = [t.id for t in fallback_chain("master", deprioritize=("atmos51", "atmos2"))]
+    assert chain[0] == "master"
+    assert chain[:4] == ["master", "flac", "640ogg", "320ogg"]
+    assert chain[-2:] == ["atmos51", "atmos2"]
+    # 目标本身就是被降权档：仍最先尝试（显式选档语义不变）
+    chain = [t.id for t in fallback_chain("atmos51", deprioritize=("atmos51", "atmos2"))]
+    assert chain[0] == "atmos51" and "atmos2" in chain
+
+
 def test_available_for_membership():
     assert "128" in [t.id for t in available_for(Membership.NONE)]
     assert "flac" not in [t.id for t in available_for(Membership.NONE)]
