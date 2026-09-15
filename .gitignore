@@ -1,7 +1,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-uv.lock
+!uv.lock
 .venv/
 node_modules/
 dist/
