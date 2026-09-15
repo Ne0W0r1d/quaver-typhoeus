@@ -40,7 +40,7 @@ class QQMusicProvider:
     """把 Typhoeus 的 QualityProvider 协议接到 qqmusic_api.Client 上。
 
     会员等级带 TTL 缓存（默认 10 分钟）；取链走 CDN dispatch 结果拼绝对 URL。
-    ``credential_state`` 是 api-server 侧的 session 对象（有 ``logged_in`` 属性），
+    ``credential_state`` 是 quaver_server 侧的 session 对象（有 ``logged_in`` 属性），
     用于把「未登录」与「登录但非会员」区分开——两者在腾讯侧行为不同。
     """
 

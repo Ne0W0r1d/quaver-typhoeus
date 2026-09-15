@@ -49,8 +49,8 @@ z：修补版本号
 
 # 已实现：高音质流传输（仅限会员）
 
-`typhoeus/` 为可安装的纯 Python 包（AGPLv3+），主仓 `api-server/` 以 path
-依赖接入，sidecar 端点：
+`typhoeus/` 为可安装的纯 Python 包（AGPLv3+）；本仓 `quaver_server/` 为 FastAPI
+sidecar 适配层（原主仓 `api-server/`，2026-09 并入），sidecar 端点：
 
 | 端点 | 说明 |
 | --- | --- |
