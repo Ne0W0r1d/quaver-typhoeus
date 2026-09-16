@@ -10,6 +10,7 @@ import asyncio
 import base64
 import logging
 import random
+import re
 from collections.abc import Callable
 from enum import Enum
 from typing import Any
@@ -560,6 +561,28 @@ async def singer_albums(mid: str, page: int = 1, num: int = 30):
 @app.get("/singer/{mid}/similar")
 async def singer_similar(mid: str, number: int = 10):
     return ok(await call(lambda: session.client.singer.get_similar(mid, number=number)))
+
+
+@app.get("/singer/{mid}/desc")
+async def singer_desc(mid: str):
+    """歌手详情归一化：百科简介（wiki <desc> 优先，回退 ex_info.desc）+ 外文名/生日/地区/立绘。"""
+    d = await call(lambda: session.client.singer.get_desc([mid]))
+    if not d.singer_list:
+        return ok(None)
+    s = d.singer_list[0]
+    m = re.search(r"<desc><!\[CDATA\[(.*?)\]\]></desc>", s.wiki or "", re.S)
+    desc = (m.group(1) if m else s.ex_info.desc).strip()
+    return ok({
+        "name": s.basic_info.name,
+        "mid": s.basic_info.mid,
+        "pic": s.pic.pic,
+        "big_pic": s.pic.big_black,
+        "desc": desc,
+        "foreign_name": s.ex_info.foreign_name,
+        "birthday": s.ex_info.birthday,
+        "area": s.ex_info.area,
+        "identity": s.ex_info.identity,
+    })
 
 
 # ===================== 评论（二期入口占位，先接通热评） =====================
