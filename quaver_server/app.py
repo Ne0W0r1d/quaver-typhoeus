@@ -25,6 +25,7 @@ import quaver_server  # noqa: F401  (触发 vendor path 注入)
 from qqmusic_api import Credential
 from qqmusic_api.core.exceptions import (
     BaseApiException,
+    CredentialExpiredError,
     CredentialInvalidError,
     LoginError,
     RatelimitedError,
@@ -115,12 +116,20 @@ async def cdn_domain() -> str:
 
 
 async def call(fn: Callable[[], Any], *, need_login: bool = False) -> Any:
-    """统一执行 SDK 调用：登录守卫 + 凭证过期自动刷新重试一次."""
+    """统一执行 SDK 调用：登录守卫 + 凭证过期自动刷新重试一次.
+
+    注意凭证有效期：musickey 只有 3 天（credential.key_expires_in）。过期后上游
+    只读接口照常可用、写接口一律返回「登录凭证已过期」（CredentialExpiredError，
+    与 CredentialInvalidError 并非同一族，早先只 catch 后者 → 收藏/取消收藏会
+    在一个静默窗口里全线失败）。所以这里既提前换新，也把两类异常都接住重试。
+    """
     if need_login:
-        session.require()
+        cred = session.require()
+        if cred.is_expired():
+            await _try_refresh()
     try:
         return await fn()
-    except CredentialInvalidError:
+    except (CredentialInvalidError, CredentialExpiredError):
         if not session.logged_in:
             raise
         refreshed = await _try_refresh()
