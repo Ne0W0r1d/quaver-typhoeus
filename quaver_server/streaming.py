@@ -8,19 +8,25 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from dataclasses import dataclass, field
+from typing import Iterator
 
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from typhoeus import ByteRange, SongRef, open_range
 from typhoeus.adapters.qqmusic import QQMusicProvider
+from typhoeus.errors import StreamError
 from typhoeus.quality import STREAMABLE, available_for
 from typhoeus.resolver import StreamResolver
+from typhoeus.stream import RESUME_RETRIES, resume_stream
 
 from quaver_server.session import session
+
+_log = logging.getLogger("quaver.stream")
 
 provider = QQMusicProvider(session.client, credential_state=session)
 resolver = StreamResolver(provider)
@@ -117,7 +123,34 @@ async def serve_stream(token: str, request: Request) -> StreamingResponse:
         headers["content-length"] = str(up.content_length)
     elif up.status == 200 and entry.total:
         headers["content-length"] = str(entry.total)
-    return StreamingResponse(up.chunks, status_code=up.status, headers=headers)
+
+    # 断流续传：要知道这段响应在文件里的绝对起点。无 Range（整段）和带 start 的 Range 都知道；
+    # 后缀 Range（bytes=-N）只在文件长度未知时才会走到这里，无从推导偏移 → 不续传。
+    if rng is None:
+        start, end, resume_times = 0, (entry.total - 1 if entry.total else None), RESUME_RETRIES
+    elif rng.start is None:
+        start, end, resume_times = 0, None, 0
+    else:
+        start = rng.start
+        end = rng.end if rng.end is not None else (entry.total - 1 if entry.total else None)
+        resume_times = RESUME_RETRIES
+
+    return StreamingResponse(
+        _tolerant(resume_stream(entry.url, up, start=start, end=end, retries=resume_times)),
+        status_code=up.status,
+        headers=headers,
+    )
+
+
+def _tolerant(chunks: Iterator[bytes]) -> Iterator[bytes]:
+    """续传也救不回来时（CDN 持续掐）不抛异常刷栈：记一条日志、收尾。
+
+    此时响应已声明 content-length 却少发字节，客户端必然报「传输被终止」——
+    那是客户端自己的错误态，不该再往服务端日志里丢一次堆栈。"""
+    try:
+        yield from chunks
+    except StreamError as exc:
+        _log.warning("回源流提前结束（续传仍失败）: %s", exc)
 
 
 async def tiers_async() -> dict:

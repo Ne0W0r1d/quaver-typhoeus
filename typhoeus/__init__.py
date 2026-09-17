@@ -32,7 +32,7 @@ from typhoeus.quality import (
     tier_by_id,
 )
 from typhoeus.resolver import ResolvedStream, StreamResolver
-from typhoeus.stream import ByteRange, UpstreamResponse, open_range, sniff
+from typhoeus.stream import RESUME_RETRIES, ByteRange, UpstreamResponse, open_range, resume_stream, sniff
 
 __version__ = "0.1.0"
 
@@ -61,6 +61,8 @@ __all__ = [
     "ByteRange",
     "UpstreamResponse",
     "open_range",
+    "resume_stream",
+    "RESUME_RETRIES",
     "sniff",
     "__version__",
 ]
