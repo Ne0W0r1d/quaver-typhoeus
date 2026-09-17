@@ -558,8 +558,14 @@ async def singer_info(mid: str):
 
 
 @app.get("/singer/{mid}/songs")
-async def singer_songs(mid: str, page: int = 1, num: int = 50):
-    return ok(await call(lambda: session.client.singer.get_songs_list(mid, page=page, num=num)))
+async def singer_songs(mid: str, page: int = 1, num: int = 50, order: int = 1):
+    """歌手歌曲列表：order 1=按热度（热门）、2=按发行时间倒序（最新发布）。
+
+    order 必须显式透传：上游 SDK 默认 order=1，前端「新歌」标签整页靠 order=2 取最新发行，
+    漏传时两次请求拿到同一批热门歌，前端按 mid 去重后新歌面板恒为空（「无法获取歌手新歌」）。
+    """
+    return ok(await call(lambda: session.client.singer.get_songs_list(
+        mid, page=page, num=num, order=order)))
 
 
 @app.get("/singer/{mid}/albums")
@@ -570,6 +576,20 @@ async def singer_albums(mid: str, page: int = 1, num: int = 30):
 @app.get("/singer/{mid}/similar")
 async def singer_similar(mid: str, number: int = 10):
     return ok(await call(lambda: session.client.singer.get_similar(mid, number=number)))
+
+
+# ex_info.area 是上游的「地区枚举 id」（原始 int，不是可读文案）：实测 0=港台、1=内地、
+# 2=日韩、3=欧美、5=其他（1=周深/薛之谦、2=米津玄師/BTS、3=Coldplay/Taylor Swift、5=其他语种）。
+# 直接透传的话，歌手页信息头（地区位）会漏出裸数字——欧美歌手莫名显示成「3」。
+SINGER_AREA_LABELS = {0: "港台", 1: "内地", 2: "日韩", 3: "欧美", 5: "其他"}
+
+
+def singer_area_label(raw: Any) -> str:
+    """地区枚举 id → 展示文案；未知取值一律返回空字符串（宁可不出，也不漏裸数字）."""
+    try:
+        return SINGER_AREA_LABELS.get(int(str(raw).strip() or 0), "")
+    except (TypeError, ValueError):
+        return ""
 
 
 @app.get("/singer/{mid}/desc")
@@ -589,7 +609,8 @@ async def singer_desc(mid: str):
         "desc": desc,
         "foreign_name": s.ex_info.foreign_name,
         "birthday": s.ex_info.birthday,
-        "area": s.ex_info.area,
+        # 注：area 经 NoneOrZeroToEmptyStr 规整，港台歌手上游给 0，到这里是 ""（视作 0 处理）
+        "area": singer_area_label(s.ex_info.area),
         "identity": s.ex_info.identity,
     })
 
