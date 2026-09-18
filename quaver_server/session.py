@@ -1,9 +1,16 @@
 """Quaver 本地 API sidecar — 基于 L-1124/QQMusicApi 的薄适配层.
 
 会话/凭证持久化：
-- credential 存 ~/.config/quaver/credential.json（0600），QR 登录 DONE 时由服务端写入，
-  token 不落浏览器（与旧版 session.txt 同思路，但格式换成 SDK 的 Credential JSON）。
-- device.json 存 ~/.local/state/quaver/device.json（SDK 的设备指纹，跨重启保号）。
+- 配置根目录与 Electron 主进程共用**同一套平台规则**（真相在 ui/electron/config.mjs，
+  改一边必须改两边）：
+      Linux    $XDG_CONFIG_HOME/quaver-music   默认 ~/.config/quaver-music
+      Windows  %AppData%/Quaver Music
+      macOS    ~/Library/Application Support/Quaver Music
+  Electron 拉起 sidecar 时会显式下传 QUAVER_CONFIG_DIR；手工单独跑则走内置规则。
+- credential.json 存登录凭证（0600），QR 登录 DONE 时由服务端写入，token 不落浏览器。
+- device.json 存 SDK 设备指纹（跨重启保号），与凭证同目录。
+- 同一目录里还有客户端设置 quaver.conf（INI），那是 Electron 侧的文件，本模块不碰。
+- 旧路径（~/.config/quaver、~/.local/state/quaver）的文件在首次访问时搬过来，避免丢登录态。
 """
 
 from __future__ import annotations
@@ -11,7 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import stat
+import sys
 import tempfile
 import threading
 from collections.abc import Callable
@@ -27,8 +36,46 @@ def _xdg(base_env: str, default: str) -> Path:
     return Path(os.environ.get(base_env, str(Path.home() / default))).expanduser()
 
 
-CREDENTIAL_PATH = _xdg("XDG_CONFIG_HOME", ".config") / "quaver" / "credential.json"
-DEVICE_PATH = _xdg("XDG_STATE_HOME", ".local/state") / "quaver" / "device.json"
+def _config_dir() -> Path:
+    """配置根目录（与 ui/electron/config.mjs:configDir 保持一致）."""
+    override = os.environ.get("QUAVER_CONFIG_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", "").strip() or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "Quaver Music"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Quaver Music"
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    return Path(xdg) / "quaver-music" if xdg else Path.home() / ".config" / "quaver-music"
+
+
+CONFIG_DIR = _config_dir()
+CREDENTIAL_PATH = CONFIG_DIR / "credential.json"
+DEVICE_PATH = CONFIG_DIR / "device.json"
+
+# 迁移前的老位置（凭证在 XDG_CONFIG_HOME/quaver，设备指纹在 XDG_STATE_HOME/quaver）
+_LEGACY_PATHS = (
+    (_xdg("XDG_CONFIG_HOME", ".config") / "quaver" / "credential.json", CREDENTIAL_PATH),
+    (_xdg("XDG_STATE_HOME", ".local/state") / "quaver" / "device.json", DEVICE_PATH),
+)
+
+
+def migrate_legacy_files() -> None:
+    """把老目录里的凭证/设备指纹搬进新配置目录。目标已存在就不动（只搬一次）。"""
+    for old, new in _LEGACY_PATHS:
+        try:
+            if new.exists() or not old.exists() or old.resolve() == new.resolve():
+                continue
+            new.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            shutil.move(str(old), str(new))  # 可能跨设备（Windows 上 .config 与 %AppData% 不同盘）
+            os.chmod(new, stat.S_IRUSR | stat.S_IWUSR)
+            logger.info("已迁移凭证文件 %s -> %s", old, new)
+        except OSError:
+            logger.warning("迁移 %s 失败（忽略，按未登录处理）", old, exc_info=True)
+
+
+migrate_legacy_files()
 
 
 def credential_has_login(credential: Credential) -> bool:
