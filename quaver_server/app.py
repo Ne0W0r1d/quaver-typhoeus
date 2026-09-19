@@ -463,6 +463,44 @@ async def songlist_fav_check():
     return ok({"ids": [s.id for s in resp.playlists]})
 
 
+class SonglistSongBody(BaseModel):
+    """歌单写操作的歌曲引用.
+
+    song_type 必须用**写侧**枚举（读侧 Song.type - 1，见 ui/src/lib/api.ts:writeSongType）：
+    发读侧原值时上游 retCode=0 但什么都不会发生（静默空操作）。
+    tid 是歌单的 tid（= 创建/收藏列表里的 id，不是 dirid）；上游多数情况容得下 0，
+    但自建歌单带上真实 tid 更稳 —— 调用方知道就传。
+    """
+
+    song_id: int
+    song_type: int = 0
+    tid: int = 0
+
+
+@app.post("/songlist/{dirid}/songs")
+async def songlist_add_song(dirid: int, body: SonglistSongBody):
+    """把歌曲加入指定歌单（PlaylistDetailWrite AddSonglist，仅自建歌单可写）."""
+    added = await call(
+        lambda: session.client.songlist.add_songs(dirid, [(body.song_id, body.song_type)], tid=body.tid),
+        need_login=True,
+    )
+    return ok({"ok": bool(added)})
+
+
+@app.delete("/songlist/{dirid}/songs")
+async def songlist_del_song(dirid: int, body: SonglistSongBody):
+    """把歌曲从指定歌单移除（PlaylistDetailWrite DelSonglist）.
+
+    注意 dirid ≠ disstid：歌单详情里的 info.dirid 才是这里要的目录 ID，
+    而 info.id 是 tid（两者都通过 GET /songlist/{id}/detail 拿到）。
+    """
+    removed = await call(
+        lambda: session.client.songlist.del_songs(dirid, [(body.song_id, body.song_type)], tid=body.tid),
+        need_login=True,
+    )
+    return ok({"ok": bool(removed)})
+
+
 class SongLikeBody(BaseModel):
     song_id: int
     song_type: int = 0
@@ -515,8 +553,36 @@ async def search_general(keyword: str, page: int = 1, num: int = 15):
 # ===================== 推荐 / 榜单 =====================
 
 @app.get("/recommend/guess")
-async def recommend_guess():
-    return ok(await call(lambda: session.client.recommend.get_guess_recommend()))
+async def recommend_guess(rounds: int = 6):
+    """猜你喜欢（无限电台那一路），一次凑够 rounds×5 首。
+
+    上游 `music.radioProxy.MbTrackRadioSvr/get_radio_track` **只给 5 首**：
+    `num` 调大被忽略（实测 num=5/10/20/50 都回 5 首）、回灌 `song_ids` 续拿直接报 22006。
+    好消息是**每次调用内容随机**，所以「多拿些」= 多调几轮再按 mid 去重。
+
+    ⚠️ **必须串行**：并发同样的请求上游只放行一个，其余全回 700000
+    （实测并发 2/3/4/6 轮都只有 1 轮成功；串行 4 轮即使 gap=0 也 4/4 成功）。
+    所以这里不图那一个 RTT，老实一轮一轮来（每轮 ~300ms，6 轮 ≈ 2s，前端有加载态）。
+    单轮失败不算整体失败（保底返回已拿到的），全失败才抛。
+    """
+    rounds = max(1, min(rounds, 8))
+    songs: list[Any] = []
+    seen: set[str] = set()
+    for i in range(rounds):
+        try:
+            r: Any = await call(lambda: session.client.recommend.get_guess_recommend())
+        except Exception as exc:  # noqa: BLE001 — 单轮失败（含 700000 节流）不该拖垮整页
+            logger.warning("猜你喜欢第 %d/%d 轮失败：%s", i + 1, rounds, exc)
+            continue
+        for s in getattr(r, "songs", None) or []:
+            mid = getattr(s, "mid", "")
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            songs.append(s)
+    if not songs:
+        raise HTTPException(502, "猜你喜欢上游无响应，请稍后重试")
+    return ok({"songs": [_to_payload(s) for s in songs], "rounds": rounds})
 
 
 @app.get("/recommend/songlist")
@@ -527,6 +593,21 @@ async def recommend_songlist(page: int = 1, num: int = 25):
 @app.get("/recommend/newsong")
 async def recommend_newsong(type: int = 5):
     return ok(await call(lambda: session.client.recommend.get_recommend_newsong(type=type)))
+
+
+# 「每日30首」= 系统虚拟歌单，**dirid 固定 202**（与「我喜欢」= 201 同一族）：
+# 它每天由服务端重生成一份 30 首的个性化歌单，disstid（本例 7083466040）**每天都变**
+# —— 实测 created-songlists 里也不列它，首页 feed 的卡片虽然带 id/dirid，但按 dirid 取才稳。
+# 读法与普通歌单详情完全一致（CgiGetDiss），只是 disstid 与 dirid 都传 202：
+# get_detail(202, dirid=202) → info.title「<昵称>的每日30首」、info.dirid=202、total=30。
+DAILY_DIRID = 202
+
+
+@app.get("/recommend/daily")
+async def recommend_daily(page: int = 1, num: int = 50):
+    """每日30首（系统 dirid=202；返回结构与 /songlist/{id}/detail 一致）."""
+    return ok(await call(lambda: session.client.songlist.get_detail(
+        DAILY_DIRID, dirid=DAILY_DIRID, num=num, page=page, onlysong=False)))
 
 
 @app.get("/top/category")
